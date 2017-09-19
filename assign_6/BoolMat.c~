@@ -1,0 +1,251 @@
+/* Assignment 6 - Question 1
+ * File: BoolMat.c
+ * Description: Boolean Matrix Multiplication using POSIX threads
+ * Author: Asmit De 10/CSE/53
+ * Date: 04-Apr-2013
+ */
+ 
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <time.h>
+#include <math.h>
+
+#define M 2
+#define N 1
+
+int	A[M][M],								// Master boolean matrix
+	B[M][M],								// Temporary matrix
+	noOfOnes,								// Global variable for no. of ones in matrix
+	countOperation = 0;							// Counter for thread operation
+	
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;				// Mutex for threads
+pthread_mutex_t operation = PTHREAD_MUTEX_INITIALIZER;				// Mutex for thread operations
+pthread_cond_t opcond = PTHREAD_COND_INITIALIZER;				// Condition variable for thread operations
+
+// Structure for thread arguments
+typedef struct thread_data
+{
+	int threadID;
+}thread_data;
+
+// Function definition for counting ones
+int CountNoOfOnes(int row)
+{
+	int 	i, j,		// Iterators
+		count = 0;	// Count by the current thread
+	for(i = row; i < row + M / N; i++)
+	{
+		for(j = 0; j < M; j++)
+		{
+			count += (A[i][j] == 1);
+		}
+	}
+	
+	return count;
+}
+
+// Function definition for Transitive Closure
+void TransitiveClosure(int row)
+{
+	int i, j, k, flag;
+	
+	for(i = row; i < row + M / N; i++)
+	{
+		flag = 0;
+		for(j = 0; j < M; j++)
+		{
+			for(k = 0; k < M; k++)
+			{
+				if(A[i][k] == 1 && A[k][j] == 1)
+					flag = 1;
+			}
+			
+			if(flag) B[i][j] = 1;
+			else B[i][j] = 0;
+		}
+	}		
+}
+
+// Function definition for matrix copy
+void CopyPartialMatrix(int row)
+{
+	int i, j;
+	
+	// Copy
+	for(i = row; i < row + M / N; i++)
+	{
+		for(j = 0; j < M; j++)
+		{
+			A[i][j] = B[i][j];
+		}
+	}
+	
+	// Clear matrix B
+	for(i = row; i < row + M / N; i++)
+	{
+		for(j = 0; j < M; j++)
+		{
+			B[i][j] = 0;
+		}
+	}
+}
+
+// Worker function definition
+void *WorkerFunction(void *workerFnArgs)
+{
+	int i, j, e;
+	// Lock mutex before counting
+	pthread_mutex_lock(&mutex);
+	
+	// Update noOfOnes
+	noOfOnes += CountNoOfOnes(((thread_data *)workerFnArgs)->threadID * M / N);
+	
+	// Release mutex after counting
+	pthread_mutex_unlock(&mutex);
+	
+	// Wait until counting operation is finished
+	pthread_mutex_lock(&operation);
+	countOperation++;
+	if(countOperation % N != 0)
+	{
+		pthread_mutex_unlock(&operation);
+		pthread_cond_wait(&opcond, &operation);
+	}
+	else
+	{
+		pthread_cond_broadcast(&opcond);
+	}
+	pthread_mutex_unlock(&operation);
+	
+	// Calculate the transitive closure of A
+	for(e = 1; pow(2, e) <= M; e++)
+	{
+		// Calculate partial closure and update operation count
+		TransitiveClosure(((thread_data *)workerFnArgs)->threadID * M / N);
+	
+		pthread_mutex_lock(&mutex);
+		countOperation++;
+		pthread_mutex_unlock(&mutex);
+		
+		// Wait until all closures have been computed
+		pthread_mutex_lock(&operation);
+		countOperation++;
+		if(countOperation % N != 0)
+		{
+			pthread_mutex_unlock(&operation);
+			pthread_cond_wait(&opcond, &operation);
+		}
+		else
+		{
+			pthread_cond_broadcast(&opcond);
+		}
+		pthread_mutex_unlock(&operation);
+		
+		// Copy the partially computed matrix to A and update operation count
+		CopyPartialMatrix(((thread_data *)workerFnArgs)->threadID * M / N);
+		
+		pthread_mutex_lock(&mutex);
+		countOperation++;
+		pthread_mutex_unlock(&mutex);
+		
+		// Wait until all copying is finished
+		pthread_mutex_lock(&operation);
+		countOperation++;
+		if(countOperation % N != 0)
+		{
+			pthread_mutex_unlock(&operation);
+			pthread_cond_wait(&opcond, &operation);
+		}
+		else
+		{
+			pthread_cond_broadcast(&opcond);
+		}
+		pthread_mutex_unlock(&operation);
+	}
+	
+	pthread_exit(NULL);
+}
+
+// Function definition for matrix display
+void DisplayMatrix()
+{
+	int i, j;
+	for(i = 0; i < M; i++)
+	{
+		for(j = 0; j < M; j++)
+		{
+			printf("%d ", A[i][j]);
+		}
+		
+		printf("\n");
+	}
+}
+
+int main()
+{
+	int	i, j,								// Iterators for loops
+		rc;								// Return code for threads
+		
+	pthread_t 	threadList[N];						// Array of worker threads
+	pthread_attr_t 	attr;							// Thread attributes
+	thread_data	workerFnArgsList[N];					// Array of arguments for worker threads
+	void 		*status;						// Status returned by worker threads
+	
+	// Create a boolean matrix and populate it
+	srand((unsigned int)time(NULL));
+	for(i = 0; i < M; i++)
+	{
+		for(j = 0; j < M; j++)
+		{
+			A[i][j] = (rand() % 2 == 0);
+		}
+	}
+	
+	// Print original matrix
+	printf("Original matrix:\n");
+	DisplayMatrix();
+	
+	// Initialize noOfOnes to 0
+	noOfOnes = 0;
+	
+	// Initialize and set thread detached attribute
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+	
+	// Create N worker threads
+	for(i = 0; i < N; i++)
+	{
+		workerFnArgsList[i].threadID = i;
+		rc = pthread_create(&threadList[i], &attr, WorkerFunction, (void*)&workerFnArgsList[i]);
+		if(rc)
+		{
+			// Error handling for thread creation errors
+			printf("\nError: Cannot create thread: Code %d", rc);
+			exit(1);
+		}
+	}
+	
+	// Clean up resources and wait for worker threads to terminate
+	pthread_attr_destroy(&attr);
+	for(i = 0; i < N; i++)
+	{
+		rc = pthread_join(threadList[i], &status);
+		if(rc)
+		{
+			// Error handling for thread join errors
+			printf("\nError: Cannot join thread: Code %d", rc);
+			exit(1);
+		}
+	}
+		
+	// Print the number of ones
+	printf("\nNumber of ones in the matrix = %d\n", noOfOnes);
+	
+	// Print transitive closure matrix
+	printf("\nTransitive Closure of matrix:\n");
+	DisplayMatrix();
+	
+	// Exit master thread
+	pthread_exit(NULL);
+}
